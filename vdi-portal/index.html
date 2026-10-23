@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>VDI Portal</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#f4f6f8;margin:0;color:#1a2330}
+.card{max-width:420px;margin:8vh auto;background:#fff;padding:28px;border-radius:12px;box-shadow:0 2px 12px #0001}
+.wide{max-width:760px}
+input{width:100%;padding:10px;margin:6px 0 14px;border:1px solid #c5ccd6;border-radius:8px;box-sizing:border-box}
+button{padding:10px 16px;border:0;border-radius:8px;background:#1d6fe0;color:#fff;font-size:15px;cursor:pointer}
+button:disabled{background:#9db8e3;cursor:default}
+button.sec{background:#e8ecf1;color:#1a2330}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.badge{display:inline-block;padding:4px 12px;border-radius:99px;font-weight:600;font-size:14px}
+.running{background:#d9f5e1;color:#14702f}
+.stopped{background:#e8ecf1;color:#444}
+.pending,.stopping{background:#fff0cc;color:#8a5a00}
+.err{color:#b3261e;min-height:20px;margin-bottom:8px}
+.hint{color:#5b6678;font-size:14px}
+table{width:100%;border-collapse:collapse;margin:12px 0}
+td,th{padding:8px;border-bottom:1px solid #e3e7ee;text-align:left;font-size:14px}
+a.btn{display:inline-block;padding:10px 16px;background:#14702f;color:#fff;border-radius:8px;text-decoration:none}
+</style>
+</head>
+<body>
+<div id='app'></div>
+<script>
+const API = 'https://jxgc1lwce9.execute-api.ap-south-1.amazonaws.com';
+const GUAC = 'https://vdi.cladiusfernando.com/guacamole/';
+const app = document.getElementById('app');
+let timer = null;
+const LABEL = {pending: 'Starting...', running: 'Running', stopping: 'Stopping...', stopped: 'Stopped'};
+
+async function api(path, method, body) {
+  const t = sessionStorage.getItem('t') || '';
+  const r = await fetch(API + path, {
+    method: method || 'GET',
+    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + t},
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.status === 401 && path !== '/login') { logout(); throw new Error('Session expired'); }
+  if (!r.ok) throw new Error(d.error || 'Something went wrong');
+  return d;
+}
+
+function logout() {
+  sessionStorage.clear();
+  clearInterval(timer);
+  showLogin('');
+}
+
+function showLogin(msg) {
+  clearInterval(timer);
+  app.innerHTML = `<div class='card'><h2>VDI Portal</h2>
+  <label>Username</label><input id='u' autocomplete='username'>
+  <label>Password</label><input id='p' type='password' autocomplete='current-password'>
+  <div class='err' id='e'></div><button id='go'>Log in</button></div>`;
+  document.getElementById('e').textContent = msg;
+  const go = document.getElementById('go');
+  const submit = async () => {
+    go.disabled = true;
+    try {
+      const d = await api('/login', 'POST', {
+        username: document.getElementById('u').value.trim(),
+        password: document.getElementById('p').value});
+      sessionStorage.setItem('t', d.token);
+      sessionStorage.setItem('u', d.username);
+      sessionStorage.setItem('a', d.admin ? '1' : '');
+      showStatus();
+    } catch (e) {
+      document.getElementById('e').textContent = e.message;
+      go.disabled = false;
+    }
+  };
+  go.onclick = submit;
+  document.getElementById('p').onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+}
+
+function showStatus() {
+  clearInterval(timer);
+  app.innerHTML = `<div class='card'><h2>Your desktop</h2>
+  <p>Signed in as <b id='who'></b></p>
+  <p>Status: <span id='st' class='badge'>Checking...</span></p>
+  <div class='err' id='msg'></div><div id='act'></div>
+  <p class='row'><button class='sec' id='lo'>Log out</button><button class='sec' id='ad'>Admin</button></p></div>`;
+  document.getElementById('who').textContent = sessionStorage.getItem('u');
+  document.getElementById('lo').onclick = logout;
+  const ad = document.getElementById('ad');
+  ad.style.display = sessionStorage.getItem('a') ? '' : 'none';
+  ad.onclick = showAdmin;
+  refresh();
+  timer = setInterval(refresh, 5000);
+}
+
+async function refresh() {
+  const msg = document.getElementById('msg');
+  if (!msg) return;
+  try {
+    const d = await api('/status');
+    msg.textContent = '';
+    const st = document.getElementById('st');
+    st.textContent = LABEL[d.state] || d.state;
+    st.className = 'badge ' + d.state;
+    const act = document.getElementById('act');
+    act.textContent = '';
+    if (d.state === 'stopped') {
+      const b = document.createElement('button');
+      b.textContent = 'Start my desktop';
+      b.onclick = async () => {
+        b.disabled = true;
+        try { await api('/start', 'POST'); refresh(); }
+        catch (e) { msg.textContent = e.message; b.disabled = false; }
+      };
+      act.appendChild(b);
+    } else if (d.state === 'running') {
+      const a = document.createElement('a');
+      a.className = 'btn'; a.href = GUAC; a.target = '_blank'; a.textContent = 'Open my desktop';
+      act.appendChild(a);
+      const p = document.createElement('p');
+      p.className = 'hint';
+      p.textContent = 'Log in with the same username and password. If you see a connection error, wait one minute and try again.';
+      act.appendChild(p);
+    } else {
+      const p = document.createElement('p');
+      p.className = 'hint';
+      p.textContent = 'Please wait, this takes about 1 to 2 minutes.';
+      act.appendChild(p);
+    }
+  } catch (e) { msg.textContent = e.message; }
+}
+
+async function showAdmin() {
+  clearInterval(timer);
+  app.innerHTML = `<div class='card wide'><h2>Admin</h2><div class='err' id='msg'></div>
+  <p class='row'><button id='sa'>Start all</button><button id='xa'>Shut down all</button><button class='sec' id='rf'>Refresh</button><button class='sec' id='bk'>Back</button></p>
+  <table><thead><tr><th>User</th><th>Instance</th><th>Type</th><th>State</th></tr></thead><tbody id='rows'></tbody></table></div>`;
+  const msg = document.getElementById('msg');
+  const load = async () => {
+    try {
+      const d = await api('/admin/instances');
+      const body = document.getElementById('rows');
+      if (!body) return;
+      body.textContent = '';
+      d.instances.forEach(i => {
+        const tr = document.createElement('tr');
+        [i.user, i.id, i.type, i.state].forEach(v => {
+          const td = document.createElement('td'); td.textContent = v; tr.appendChild(td);
+        });
+        body.appendChild(tr);
+      });
+    } catch (e) { msg.textContent = e.message; }
+  };
+  const bulk = (path, text) => async () => {
+    if (!confirm(text)) return;
+    try { const d = await api(path, 'POST'); msg.textContent = d.message; setTimeout(load, 3000); }
+    catch (e) { msg.textContent = e.message; }
+  };
+  document.getElementById('sa').onclick = bulk('/admin/start-all', 'Start every desktop?');
+  document.getElementById('xa').onclick = bulk('/admin/stop-all', 'Shut down every desktop? Unsaved work will be lost.');
+  document.getElementById('rf').onclick = load;
+  document.getElementById('bk').onclick = showStatus;
+  load();
+  timer = setInterval(load, 10000);
+}
+
+if (sessionStorage.getItem('t')) showStatus(); else showLogin('');
+</script>
+</body>
+</html>
